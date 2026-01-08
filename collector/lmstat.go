@@ -428,25 +428,36 @@ func (c *lmstatCollector) getLmstatLicensesInfo(ch chan<- prometheus.Metric) err
 
 func (c *lmstatCollector) collect(licenses *config.License, ch chan<- prometheus.Metric) error {
 	var (
-		outBytes []byte
-		err      error
+		outBytes      []byte
+		err           error
+		licenseSource string
 	)
 
-	// Call lmstat with -a (display everything)
+	// Determine license source
 	switch {
 	case licenses.LicenseFile != "":
-		outBytes, err = lmutilOutput(c.logger, "lmstat", "-c", licenses.LicenseFile, "-a")
-		if err != nil {
-			return err
-		}
+		licenseSource = licenses.LicenseFile
 	case licenses.LicenseServer != "":
-		outBytes, err = lmutilOutput(c.logger, "lmstat", "-c", licenses.LicenseServer, "-a")
-		if err != nil {
-			return err
-		}
+		licenseSource = licenses.LicenseServer
 	default:
 		return fmt.Errorf("couldn't find `license_file` or `license_server` for %v",
 			licenses.Name)
+	}
+
+	// If features_to_include is specified, query individual features
+	// Otherwise use -a for all features (backward compatible)
+	if licenses.FeaturesToInclude != "" {
+		featuresToInclude := strings.Split(licenses.FeaturesToInclude, ",")
+		outBytes, err = c.querySpecificFeatures(licenseSource, featuresToInclude)
+		if err != nil {
+			return err
+		}
+	} else {
+		// Default behavior: query all features with -a
+		outBytes, err = lmutilOutput(c.logger, "lmstat", "-c", licenseSource, "-a")
+		if err != nil {
+			return err
+		}
 	}
 
 	outStr, err := splitOutput(outBytes)
@@ -600,4 +611,66 @@ func convertLmstatTimeToUnixTime(lmtime string, logger *slog.Logger) time.Time {
 	}
 
 	return unixtime
+}
+
+// querySpecificFeatures queries individual features using -f flag and combines output
+func (c *lmstatCollector) querySpecificFeatures(licenseSource string, features []string) ([]byte, error) {
+	var combinedOutput bytes.Buffer
+	headerWritten := false
+
+	for _, feature := range features {
+		feature = strings.TrimSpace(feature)
+		if feature == "" {
+			continue
+		}
+
+		c.logger.Debug("Querying specific feature", "feature", feature, "license", licenseSource)
+
+		outBytes, err := lmutilOutput(c.logger, "lmstat", "-c", licenseSource, "-f", feature)
+		if err != nil {
+			c.logger.Warn("Failed to query feature", "feature", feature, "err", err)
+			continue
+		}
+
+		if !headerWritten {
+			// Write the complete first output (includes headers)
+			combinedOutput.Write(outBytes)
+			headerWritten = true
+		} else {
+			// For subsequent features, extract only feature-specific information
+			featureInfo := c.extractFeatureInfo(outBytes)
+			combinedOutput.Write(featureInfo)
+		}
+	}
+
+	if !headerWritten {
+		return nil, fmt.Errorf("no features could be queried successfully")
+	}
+
+	return combinedOutput.Bytes(), nil
+}
+
+// extractFeatureInfo extracts feature usage information from lmstat -f output
+// skipping the header lines (lmutil version, server status, vendor daemon status)
+func (c *lmstatCollector) extractFeatureInfo(output []byte) []byte {
+	var result bytes.Buffer
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	foundFeatureUsage := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Look for "Feature usage info:" or "Users of" to identify feature section
+		if strings.Contains(line, "Feature usage info:") || strings.HasPrefix(line, "Users of ") {
+			foundFeatureUsage = true
+		}
+
+		// Once we find feature usage section, include all lines
+		if foundFeatureUsage {
+			result.WriteString(line)
+			result.WriteString("\n")
+		}
+	}
+
+	return result.Bytes()
 }

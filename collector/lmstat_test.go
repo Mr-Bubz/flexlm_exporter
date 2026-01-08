@@ -17,6 +17,7 @@ package collector
 import (
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,6 +356,60 @@ func TestParseLmstatLicenseInfoFeature(t *testing.T) {
 
 	if reservGroupByFeature["feature11"] != nil {
 		t.Fatalf("Unexpected value for feature11: shouldn't match any reservation")
+	}
+}
+
+func TestExtractFeatureInfo(t *testing.T) {
+	t.Parallel()
+
+	// Test data simulating lmstat -f output
+	testOutput := []byte(`lmutil - Copyright (c) 1989-2018 Flexera. All Rights Reserved.
+Flexible License Manager status on Wed 1/8/2026 10:00
+
+License server status: 27000@host1,27000@host2,27000@host3
+    host1: license server UP (MASTER) v11.17
+    host2: license server UP v11.17
+
+Vendor daemon status (on host1):
+
+     VENDOR1: UP v11.6
+
+Feature usage info:
+
+Users of feature1:  (Total of 10 licenses issued;  Total of 2 licenses in use)
+
+  "feature1" v1.0, vendor: VENDOR1
+  floating license
+
+    user1 host1 /dev/tty (v1.0) (host2/27000 123), start Wed 1/8 10:00
+`)
+
+	logger := promslog.New(&promslog.Config{})
+	collector := &lmstatCollector{logger: logger}
+
+	result := collector.extractFeatureInfo(testOutput)
+	resultStr := string(result)
+
+	// Verify that header lines are excluded
+	if strings.Contains(resultStr, "lmutil - Copyright") {
+		t.Fatal("extractFeatureInfo should not include lmutil copyright line")
+	}
+
+	if strings.Contains(resultStr, "License server status:") {
+		t.Fatal("extractFeatureInfo should not include license server status")
+	}
+
+	if strings.Contains(resultStr, "Vendor daemon status") {
+		t.Fatal("extractFeatureInfo should not include vendor daemon status")
+	}
+
+	// Verify that feature usage info is included
+	if !strings.Contains(resultStr, "Feature usage info:") {
+		t.Fatal("extractFeatureInfo should include 'Feature usage info:' line")
+	}
+
+	if !strings.Contains(resultStr, "Users of feature1:") {
+		t.Fatal("extractFeatureInfo should include feature usage details")
 	}
 }
 
