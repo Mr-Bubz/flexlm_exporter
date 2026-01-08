@@ -10,3 +10,5 @@
 # Binaries
 flexlm_exporter
 flexlm_exporter.exe
+*.backup
+IMPLEMENTATION_SUMMARY.md
