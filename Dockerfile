@@ -1,3 +1,27 @@
+# Build stage
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apk add --no-cache git make
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the binary with the same flags as promu
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -a \
+    -tags 'netgo static_build' \
+    -ldflags '-s -w' \
+    -o flexlm_exporter \
+    .
+
+# Runtime stage
 FROM docker.io/rockylinux/rockylinux:8
 LABEL maintainer="Mario Trangoni <mjtrangoni@gmail.com>"
 LABEL org.opencontainers.image.source="https://github.com/mjtrangoni/flexlm_exporter"
@@ -9,7 +33,8 @@ RUN rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial && \
     dnf -y clean all && \
     rm -f /etc/pki/tls/private/postfix.key
 
-COPY flexlm_exporter /bin/flexlm_exporter
+# Copy binary from builder stage
+COPY --from=builder /build/flexlm_exporter /bin/flexlm_exporter
 
 # Add exporter user and group
 RUN groupadd -g 30001 exporter && \
